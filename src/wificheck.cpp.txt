@@ -1,0 +1,142 @@
+/*
+  ESP32 Wi-Fi Strength Monitor
+  - Prints raw & smoothed RSSI every second
+  - Reconnects with backoff if Wi-Fi drops
+  - Serves JSON at http://<esp32-ip>/rssi
+*/
+
+#include <WiFi.h>
+#include <WebServer.h>
+
+///////////////////////////
+// CONFIGURE THESE
+const char* WIFI_SSID     = "bluesky";
+const char* WIFI_PASSWORD = "samiraali";
+
+// Sample period (ms) and smoothing factor for EMA
+const uint32_t SAMPLE_MS = 1000;
+const float    ALPHA     = 0.25f;  // 0..1; higher = faster response
+///////////////////////////
+
+WebServer server(80);
+
+volatile int  rssi_raw = -127;     // last raw reading
+volatile float rssi_ema = -127.0;  // smoothed reading
+IPAddress ip;
+uint32_t lastSample = 0;
+
+// Map RSSI (dBm) to a 0–100 "quality" score
+int qualityFromRSSI(int rssi) {
+  // Typical range: -30 (excellent) to around -90 (poor)
+  const int RSSI_MIN = -100; // <= very poor
+  const int RSSI_MAX = -50;  // >= excellent
+  if (rssi <= RSSI_MIN) return 0;
+  if (rssi >= RSSI_MAX) return 100;
+  return 2 * (rssi + 100); // simple linear map
+}
+
+String jsonStatus() {
+  int q = qualityFromRSSI(rssi_raw);
+  String json = "{";
+  json += "\"connected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false") + ",";
+  json += "\"ssid\":\"" + String(WiFi.SSID()) + "\",";
+  json += "\"bssid\":\"" + WiFi.BSSIDstr() + "\",";
+  json += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
+  json += "\"channel\":" + String(WiFi.channel()) + ",";
+  json += "\"rssi_raw\":" + String(rssi_raw) + ",";
+  json += "\"rssi_smooth\":" + String(rssi_ema, 1) + ",";
+  json += "\"quality\":" + String(q);
+  json += "}";
+  return json;
+}
+
+void handleRoot() {
+  server.send(200, "text/plain", "ESP32 Wi-Fi RSSI monitor. See /rssi for JSON.");
+}
+
+void handleRSSI() {
+  server.send(200, "application/json", jsonStatus());
+}
+
+void printStatusLine() {
+  int q = qualityFromRSSI(rssi_raw);
+  Serial.printf("[WiFi] RSSI: %4d dBm | Smooth: %5.1f dBm | Qual: %3d%% | ch:%d | %s | IP:%s\n",
+                rssi_raw, rssi_ema, q, WiFi.channel(),
+                WiFi.SSID().c_str(),
+                WiFi.localIP().toString().c_str());
+}
+
+void connectWiFiWithBackoff() {
+  static uint32_t attempt = 0;
+  uint32_t backoff_ms = min<uint32_t>(30000, 500 * (1 << min<uint32_t>(attempt, 6))); // up to 30s
+
+  Serial.printf("[WiFi] Connecting to \"%s\"...\n", WIFI_SSID);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  uint32_t start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 12000) { // 12s timeout
+    delay(250);
+    Serial.print('.');
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    attempt = 0;
+    ip = WiFi.localIP();
+    Serial.printf("[WiFi] Connected. IP: %s, RSSI: %d dBm\n",
+                  ip.toString().c_str(), WiFi.RSSI());
+  } else {
+    attempt++;
+    Serial.printf("[WiFi] Connect failed. Backing off for %lu ms\n", (unsigned long)backoff_ms);
+    delay(backoff_ms);
+  }
+}
+
+void onWiFiEvent(WiFiEvent_t event) {
+  switch (event) {
+    case SYSTEM_EVENT_STA_CONNECTED:
+      Serial.println("[WiFiEvent] STA_CONNECTED");
+      break;
+    case SYSTEM_EVENT_STA_DISCONNECTED:
+      Serial.println("[WiFiEvent] STA_DISCONNECTED");
+      break;
+    case SYSTEM_EVENT_STA_GOT_IP:
+      Serial.printf("[WiFiEvent] GOT_IP: %s\n", WiFi.localIP().toString().c_str());
+      break;
+    default:
+      break;
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.onEvent(onWiFiEvent);
+  connectWiFiWithBackoff();
+
+  server.on("/", handleRoot);
+  server.on("/rssi", handleRSSI);
+  server.begin();
+  Serial.println("[HTTP] Server started. Use /rssi for JSON.");
+}
+
+void loop() {
+  // Maintain connection
+  if (WiFi.status() != WL_CONNECTED) {
+    connectWiFiWithBackoff();
+  }
+
+  // Sample RSSI every SAMPLE_MS when connected
+  uint32_t now = millis();
+  if (WiFi.status() == WL_CONNECTED && now - lastSample >= SAMPLE_MS) {
+    lastSample = now;
+    rssi_raw = WiFi.RSSI();                 // returns dBm (negative)
+    if (rssi_ema < -120) rssi_ema = rssi_raw; // initialize EMA on first run
+    rssi_ema = ALPHA * rssi_raw + (1.0f - ALPHA) * rssi_ema;
+    printStatusLine();
+  }
+
+  server.handleClient();
+}

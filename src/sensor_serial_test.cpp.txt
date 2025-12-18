@@ -1,0 +1,51 @@
+/*
+  sensor_serial_test.cpp
+  Simple serial-only test for the DHT11 sensor on ESP32-C3.
+  - No Wi-Fi used
+  - Reads temperature and humidity and prints to Serial every 5s
+
+  Build with PlatformIO (same project). Upload and open serial monitor at 115200.
+*/
+
+#include <Arduino.h>
+#include <DHT.h>
+
+#define DHTPIN 1
+#define DHTTYPE DHT11
+
+DHT dht(DHTPIN, DHTTYPE);
+
+void setup() {
+  Serial.begin(115200);
+  // On some ESP32 boards `while(!Serial)` waits for a USB serial host and
+  // can block output. Remove that so the device prints immediately.
+  delay(100);
+  Serial.println("\n[DHT11 test] Serial-only sensor check (no Wi-Fi)");
+  dht.begin();
+  delay(2000); // allow sensor to settle
+}
+
+void loop() {
+  static unsigned long lastHeartbeat = 0;
+  static unsigned long lastSensor    = 0;
+  unsigned long now = millis();
+
+  // Heartbeat every 1s so you can see the board is alive immediately.
+  if (now - lastHeartbeat >= 1000) {
+    lastHeartbeat = now;
+    Serial.printf("[HB] alive ms=%lu\n", now);
+  }
+
+  // Sensor read every 5s (non-blocking)
+  if (now - lastSensor >= 5000) {
+    lastSensor = now;
+    float tempC = dht.readTemperature();
+    float hum   = dht.readHumidity();
+
+    if (isnan(tempC) || isnan(hum)) {
+      Serial.println("[WARN] Sensor read failed (NaN). Check wiring and power.");
+    } else {
+      Serial.printf("[DHT] Temp: %.1f °C\tHumidity: %.0f %%\n", tempC, hum);
+    }
+  }
+}

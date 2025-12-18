@@ -1,0 +1,21 @@
+// Configuration template - Copy this to config.h and fill in your values
+// config.h is gitignored and will not be uploaded to GitHub
+
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// WiFi credentials
+#define WIFI_SSID "your-wifi-ssid"
+#define WIFI_PASS "your-wifi-password"
+
+// Cloud Function endpoint
+#define FUNCTION_URL "https://your-region-your-project.cloudfunctions.net/ingest"
+#define FUNCTION_HOST "your-region-your-project.cloudfunctions.net"
+
+// Device authentication key (64 hex chars)
+#define DEVICE_KEY "your-64-character-hex-device-key-here"
+
+// Device identifier
+#define DEVICE_ID "node-2"
+
+#endif
